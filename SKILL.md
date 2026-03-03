@@ -1,96 +1,95 @@
 ---
 name: kb-collector
-description: Knowledge Base Collector - save articles, text, and YouTube videos to Obsidian. Automatically transcribes YouTube videos with Whisper, fetches URLs, and supports weekly/monthly digest emails.
+description: Knowledge Base Collector - save YouTube, URLs, text to Obsidian with AI summarization. Auto-transcribes videos, fetches pages, supports weekly/monthly digest emails.
 ---
 
 # KB Collector
 
-Save articles, text, and YouTube videos to Obsidian with automatic transcription and summarization.
-
-## Trigger
-
-- `collect <URL|文字> <tags>` - Save content to Obsidian
-- `digest weekly|monthly|yearly` - Send digest email
-
-## Configuration
-
-Set environment variables or edit the script to customize paths:
-
-```bash
-# Obsidian Vault path (default: ~/Documents/Georges/Knowledge)
-export OBSIDIAN_VAULT="~/Documents/YourVault"
-
-# Your name for notes
-export NOTE_AUTHOR="YourName"
-```
+Knowledge Base Collector - Save YouTube, URLs, and text to Obsidian with automatic transcription and summarization.
 
 ## Features
 
-### YouTube Collection
-- Download audio with yt-dlp
-- Transcribe with Faster-Whisper
-- Save with TLDR summary
+- **YouTube Collection** - Download audio, transcribe with Whisper, auto-summarize
+- **URL Collection** - Fetch and summarize web pages
+- **Plain Text** - Direct save with tags
+- **Digest** - Weekly/Monthly/Yearly review emails
 
-### URL Collection
-- Fetch and summarize web pages
-- Auto-tag based on content
-
-### Plain Text Collection
-- Direct save with tags
-
-### Digest
-- Weekly/Monthly/Yearly review
-- Auto-email via Gmail
-
-## Dependencies
+## Installation
 
 ```bash
-# Required
-pip install yfinance yt-dlp faster-whisper
+# Install dependencies
+pip install yt-dlp faster-whisper requests beautifulsoup4
 
-# Optional (for Gmail digest)
-gog skill install gmail
+# For AI summarization (optional)
+pip install openai anthropic
 ```
 
-## Usage
+## Usage (Python Version - Recommended)
 
 ```bash
 # Collect YouTube video
-collect https://youtu.be/xxxxx stock,investing
+python3 scripts/collect.py youtube "https://youtu.be/xxxxx" "stock,investing"
 
 # Collect URL
-collect https://example.com/article python,api
+python3 scripts/collect.py url "https://example.com/article" "python,api"
 
 # Collect plain text
-collect "My note content" tag1,tag2
-
-# Send weekly digest
-digest weekly
-
-# Send monthly digest
-digest monthly
+python3 scripts/collect.py text "My note content" "tag1,tag2"
 ```
 
-## Storage
+## Usage (Bash Version - Legacy)
 
-Notes saved to: `{OBSIDIAN_VAULT}/yyyy-mm-dd-title.md`
+```bash
+# Collect YouTube
+./scripts/collect.sh "https://youtu.be/xxxxx" "stock,investing" youtube
 
-Format:
+# Collect URL
+./scripts/collect.sh "https://example.com/article" "python,api" url
+
+# Collect text
+./scripts/collect.sh "My note" "tag1,tag2" text
+```
+
+## Configuration
+
+Edit the script to customize:
+
+```python
+VAULT_PATH = os.path.expanduser("~/Documents/YourVault")
+NOTE_AUTHOR = "YourName"
+```
+
+## Output Format
+
+Notes saved to: `{VAULT_PATH}/yyyy-mm-dd-title.md`
+
 ```markdown
 ---
-tags: [tag1, tag2]
+created: 2026-03-03T12:00:00
 source: https://...
-date: 2026-03-03
+tags: [stock, investing]
+author: George
 ---
 
 # Title
 
-TLDR summary...
+> **TLDR:** Summary here...
 
-## Content
-...
+---
+
+Content...
+
+---
+*Saved: 2026-03-03*
 ```
+
+## Dependencies
+
+- yt-dlp
+- faster-whisper (for transcription)
+- requests + beautifulsoup4 (for URL fetching)
+- Optional: openai/anthropic (for AI summarization)
 
 ## Credits
 
-Inspired by personal note-taking workflows and Obsidian automation.
+Automated note-taking workflow for Obsidian.
