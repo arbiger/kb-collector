@@ -11,8 +11,8 @@ from datetime import datetime
 import yfinance as yf
 
 # Configuration
-VAULT_PATH = os.path.expanduser("~/Documents/Georges/Knowledge")
-NOTE_AUTHOR = "George"
+VAULT_PATH = os.path.expanduser("~/Documents/Knowledge")
+NOTE_AUTHOR = "User"
 
 def get_video_title(url):
     """Get YouTube video title"""
