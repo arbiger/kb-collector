@@ -4,8 +4,8 @@
 # Uses gog for email sending (no need to store credentials)
 
 TYPE="${1:-weekly}"
-VAULT="/Users/george/Documents/Georges/Knowledge"
-RECIPIENT="george@precaster.com.tw"
+VAULT="[Vault Path]"
+RECIPIENT="[Your Email]"
 
 # Date ranges
 case "$TYPE" in
