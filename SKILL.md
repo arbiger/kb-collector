@@ -96,7 +96,7 @@ Notes saved to: `{VAULT_PATH}/yyyy-mm-dd-title.md`
 created: 2026-03-03T12:00:00
 source: https://...
 tags: [stock, investing]
-author: George
+author: [Your Name]
 ---
 
 # Title
