@@ -3,9 +3,9 @@
 # Usage: ./nightly-research.sh [--save] [--send]
 # Uses Tavily API for searching AI/LLM/tech trends
 
-VAULT="/Users/george/Documents/Georges/Knowledge"
-RECIPIENT="george@precaster.com.tw"
-TAVILY_API_KEY="${TAVILY_API_KEY:-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}"
+VAULT="[Vault Path]"
+RECIPIENT="[Your Email]"
+TAVILY_API_KEY="${TAVILY_API_KEY:Your Own Key}"
 
 # Search topics
 TOPICS=("AI" "LLM" "OpenAI" "Claude AI" "Gemini AI" "LangGraph" "AutoGPT" "AI Agent" "RAG" "China LLM" "Llama" "Hugging Face" "OpenClaw" "AI use case")
