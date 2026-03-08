@@ -3,9 +3,9 @@
 # Usage: ./nightly-research.sh [--save] [--send]
 # Uses Tavily API for searching AI/LLM/tech trends
 
-VAULT="[Vault Path]"
-RECIPIENT="[Your Email]"
-TAVILY_API_KEY="${TAVILY_API_KEY:Your Own Key}"
+VAULT="${OBSIDIAN_VAULT:-~/Documents/YourVault}"
+RECIPIENT="${RECIPIENT:-your-email@example.com}"
+TAVILY_API_KEY="${TAVILY_API_KEY:-your-own-tavily-api-key}"
 
 # Search topics
 TOPICS=("AI" "LLM" "OpenAI" "Claude AI" "Gemini AI" "LangGraph" "AutoGPT" "AI Agent" "RAG" "China LLM" "Llama" "Hugging Face" "OpenClaw" "AI use case")
