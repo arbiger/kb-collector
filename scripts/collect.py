@@ -2,6 +2,7 @@
 """
 KB Collector - Save YouTube, URLs, Text to Obsidian with AI Summarization
 Refactored version with argparse and .env support.
+Refined for Agent-friendly use (Optional AI, Metadata emphasis).
 """
 
 import os
@@ -9,6 +10,7 @@ import sys
 import subprocess
 import argparse
 import logging
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -20,23 +22,26 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 VAULT_PATH = os.path.expanduser(os.getenv("VAULT_PATH", "~/Documents/Knowledge"))
-NOTE_AUTHOR = os.getenv("NOTE_AUTHOR", "User")
-AI_PROVIDER = os.getenv("AI_PROVIDER", "openai").lower()
+DEFAULT_AUTHOR = os.getenv("NOTE_AUTHOR", "User")
+AI_PROVIDER = os.getenv("AI_PROVIDER", "none").lower()
 
-def get_video_title(url):
-    """Get YouTube video title using yt-dlp"""
+def get_video_info(url):
+    """Get YouTube video title and uploader using yt-dlp"""
     try:
         result = subprocess.run(
-            ['yt-dlp', '--get-title', url],
+            ['yt-dlp', '--get-title', '--get-filename', '-o', '%(uploader)s', url],
             capture_output=True, text=True, timeout=30
         )
-        title = result.stdout.strip()
+        lines = result.stdout.strip().split('\n')
+        title = lines[0] if len(lines) > 0 else ""
+        uploader = lines[1] if len(lines) > 1 else "Unknown"
+        
         # Clean filename: remove illegal characters and limit length
-        title = ''.join(c for c in title if c.isalnum() or c in ' -_').strip()[:100]
-        return title or f"Video-{datetime.now().strftime('%H%M%S')}"
+        clean_title = ''.join(c for c in title if c.isalnum() or c in ' -_').strip()[:100]
+        return clean_title or f"Video-{datetime.now().strftime('%H%M%S')}", uploader
     except Exception as e:
-        logger.error(f"Error getting video title: {e}")
-        return f"Video-{datetime.now().strftime('%H%M%S')}"
+        logger.error(f"Error getting video info: {e}")
+        return f"Video-{datetime.now().strftime('%H%M%S')}", "Unknown"
 
 def download_youtube_audio(url):
     """Download YouTube audio as m4a"""
@@ -85,13 +90,15 @@ def transcribe_audio(audio_path):
 def summarize_text(text, title=""):
     """Summarize text using configured AI provider"""
     if not text:
-        return "No content to summarize."
+        return ""
+
+    if AI_PROVIDER == "none" or not AI_PROVIDER:
+        return ""
 
     api_key = os.getenv(f"{AI_PROVIDER.upper()}_API_KEY")
-    
     if not api_key:
-        logger.warning(f"No API key found for {AI_PROVIDER}. Using basic snippet.")
-        return text[:300] + "..." if len(text) > 300 else text
+        logger.debug(f"No API key for {AI_PROVIDER}, skipping internal summary.")
+        return ""
 
     try:
         if AI_PROVIDER == "openai":
@@ -128,10 +135,10 @@ def summarize_text(text, title=""):
     except Exception as e:
         logger.error(f"AI summarization failed: {e}")
     
-    return text[:300] + "..." if len(text) > 300 else text
+    return ""
 
 def fetch_url(url):
-    """Fetch and clean URL content"""
+    """Fetch and clean URL content, extracting title and author"""
     try:
         import requests
         from bs4 import BeautifulSoup
@@ -142,9 +149,24 @@ def fetch_url(url):
         
         soup = BeautifulSoup(r.text, 'html.parser')
         
-        # Try to find the title
+        # Title extraction
         title = soup.title.string if soup.title else "web-note"
-        title = ''.join(c for c in title if c.isalnum() or c in ' -_').strip()[:60]
+        clean_title = ''.join(c for c in title if c.isalnum() or c in ' -_').strip()[:60]
+
+        # Author extraction (best effort)
+        author = "Unknown"
+        author_meta = (
+            soup.find("meta", attrs={"name": "author"}) or 
+            soup.find("meta", attrs={"property": "article:author"}) or
+            soup.find("meta", attrs={"name": "twitter:creator"})
+        )
+        if author_meta:
+            author = author_meta.get("content", "Unknown")
+        else:
+            # Try to find common patterns
+            author_tag = soup.find(class_=["author", "byline", "creator"])
+            if author_tag:
+                author = author_tag.get_text().strip()
 
         # Remove noise
         for tag in soup(["script", "style", "nav", "footer", "header"]):
@@ -155,12 +177,12 @@ def fetch_url(url):
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         content = '\n'.join(lines)
         
-        return content, title
+        return content, clean_title, author
     except Exception as e:
         logger.error(f"Error fetching URL: {e}")
-        return str(e), "error-fetching"
+        return str(e), "error-fetching", "N/A"
 
-def save_to_obsidian(content, title, url, tags, tldr=None):
+def save_to_obsidian(content, title, url, tags, tldr=None, source_author="Unknown"):
     """Save formatted markdown to Obsidian vault"""
     date_str = datetime.now().strftime('%Y-%m-%d')
     safe_title = title.replace('/', '-')
@@ -175,22 +197,23 @@ def save_to_obsidian(content, title, url, tags, tldr=None):
     frontmatter = f"""---
 created: {datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}
 source: {url or 'N/A'}
+author: {source_author}
 tags: [{formatted_tags}]
-author: {NOTE_AUTHOR}
 ---
 
 # {title}
 
-> **TLDR:** {tldr or 'No summary available.'}
-
----
-
 """
+    if tldr:
+        frontmatter += f"> **TLDR:** {tldr}\n\n"
+    
+    frontmatter += "---\n\n"
+
     try:
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(frontmatter)
             f.write(content)
-            f.write(f"\n\n---\n*Saved: {datetime.now().strftime('%Y-%m-%d')}*\n")
+            f.write(f"\n\n---\n*Collected by: {DEFAULT_AUTHOR} on {datetime.now().strftime('%Y-%m-%d')}*\n")
         return filepath
     except Exception as e:
         logger.error(f"Failed to save file: {e}")
@@ -200,21 +223,27 @@ def main():
     parser = argparse.ArgumentParser(description="KB Collector - Save knowledge to Obsidian")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
+    # Common args
+    def add_common_args(p):
+        p.add_argument("--tags", "-t", default="research", help="Tags for the note")
+        p.add_argument("--summary", "-s", help="Manually provide a summary (bypasses AI)")
+
     # YouTube Parser
     youtube_parser = subparsers.add_parser("youtube", help="Collect from YouTube")
     youtube_parser.add_argument("url", help="YouTube URL")
-    youtube_parser.add_argument("--tags", "-t", default="youtube,research", help="Tags for the note")
+    add_common_args(youtube_parser)
 
     # URL Parser
     url_parser = subparsers.add_parser("url", help="Collect from URL")
     url_parser.add_argument("url", help="Web URL")
-    url_parser.add_argument("--tags", "-t", default="web,research", help="Tags for the note")
+    add_common_args(url_parser)
 
     # Text Parser
     text_parser = subparsers.add_parser("text", help="Save plain text")
     text_parser.add_argument("content", help="Text content")
     text_parser.add_argument("--title", help="Optional title")
-    text_parser.add_argument("--tags", "-t", default="note", help="Tags for the note")
+    text_parser.add_argument("--author", help="Source author")
+    add_common_args(text_parser)
 
     args = parser.parse_args()
 
@@ -223,13 +252,14 @@ def main():
         return
 
     if args.command == "youtube":
-        title = get_video_title(args.url)
+        title, uploader = get_video_info(args.url)
         audio_path = download_youtube_audio(args.url)
         transcript = transcribe_audio(audio_path)
         
         if transcript:
-            summary = summarize_text(transcript, title)
-            save_path = save_to_obsidian(transcript, title, args.url, args.tags, tldr=summary)
+            summary = args.summary or summarize_text(transcript, title)
+            tags = "youtube," + args.tags
+            save_path = save_to_obsidian(transcript, title, args.url, tags, tldr=summary, source_author=uploader)
             if save_path:
                 logger.info(f"✅ Successfully saved YouTube note: {save_path}")
         else:
@@ -240,16 +270,17 @@ def main():
 
     elif args.command == "url":
         logger.info(f"Fetching URL: {args.url}")
-        content, title = fetch_url(args.url)
-        summary = summarize_text(content, title)
-        save_path = save_to_obsidian(content, title, args.url, args.tags, tldr=summary)
+        content, title, author = fetch_url(args.url)
+        summary = args.summary or summarize_text(content, title)
+        tags = "web," + args.tags
+        save_path = save_to_obsidian(content, title, args.url, tags, tldr=summary, source_author=author)
         if save_path:
             logger.info(f"✅ Successfully saved URL note: {save_path}")
 
     elif args.command == "text":
         title = args.title or f"Note-{datetime.now().strftime('%H%M%S')}"
-        summary = summarize_text(args.content, title)
-        save_path = save_to_obsidian(args.content, title, None, args.tags, tldr=summary)
+        summary = args.summary or summarize_text(args.content, title)
+        save_path = save_to_obsidian(args.content, title, None, args.tags, tldr=summary, source_author=args.author or "N/A")
         if save_path:
             logger.info(f"✅ Successfully saved text note: {save_path}")
 

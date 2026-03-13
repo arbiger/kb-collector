@@ -33,23 +33,28 @@ Edit the `.env` file in the root directory:
 ```env
 VAULT_PATH=~/Documents/Knowledge
 NOTE_AUTHOR=YourName
-AI_PROVIDER=openai # or anthropic, gemini
-OPENAI_API_KEY=your_key_here
-TAVILY_API_KEY=your_key_here
+AI_PROVIDER=none # Set to 'openai' only if you want internal summarization
 ```
 
 ## Usage
 
-### Collect knowledge
+### Agent-Friendly Collection (Recommended)
+If you are an AI agent, you can fetch content and pass a pre-generated summary:
+
 ```bash
-# Collect YouTube video
+python3 scripts/collect.py url "https://example.com" --summary "A great article about X."
+```
+
+### Manual Collection
+```bash
+# Collect YouTube video (will extract uploader and title automatically)
 python3 scripts/collect.py youtube "https://youtu.be/xxxxx" --tags "stock,investing"
 
 # Collect URL
 python3 scripts/collect.py url "https://example.com/article" --tags "python,api"
 
 # Collect plain text
-python3 scripts/collect.py text "My note content" --title "Custom Title" --tags "tag1,tag2"
+python3 scripts/collect.py text "My note content" --title "Custom Title" --author "Original Author"
 ```
 
 ### Nightly Research

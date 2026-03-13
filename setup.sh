@@ -31,7 +31,9 @@ fi
 if [ ! -f .env ]; then
     echo "Creating .env from .env.example..."
     cp .env.example .env
-    echo "⚠️ Please edit .env and add your API keys and vault path."
+    echo "✅ Created .env with default settings (No AI provider)."
+    echo "⚠️ Please edit .env to set your VAULT_PATH."
+    echo "💡 Note: AI keys are optional if you use an agent (like OpenClaw) to handle summaries."
 fi
 
 echo "=== Setup Complete! ==="
