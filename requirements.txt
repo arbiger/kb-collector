@@ -1,0 +1,9 @@
+python-dotenv
+yt-dlp
+faster-whisper
+requests
+beautifulsoup4
+openai
+anthropic
+google-generativeai
+yfinance

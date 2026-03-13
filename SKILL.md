@@ -5,55 +5,56 @@ description: Knowledge Base Collector - save YouTube, URLs, text to Obsidian wit
 
 # KB Collector
 
-Knowledge Base Collector - Save YouTube, URLs, and text to Obsidian with automatic transcription and summarization.
+Save YouTube, URLs, and text to Obsidian with automatic transcription and AI summarization.
 
 ## Features
 
-- **YouTube Collection** - Download audio, transcribe with Whisper, auto-summarize
-- **URL Collection** - Fetch and summarize web pages
-- **Plain Text** - Direct save with tags
-- **Digest** - Weekly/Monthly/Yearly review emails
-- **Nightly Research** - Automated AI/LLM/tech trend tracking
+- **YouTube Collection** - Download audio, transcribe with Whisper, AI-summarize (OpenAI/Anthropic/Gemini)
+- **URL Collection** - Fetch web pages, clean content, and AI-summarize
+- **Plain Text** - Direct save with AI-generated TLDR
+- **Nightly Research** - Automated AI/LLM/tech trend tracking via Tavily API
+- **Centralized Config** - Manage everything in a simple `.env` file
 
 ## Installation
 
 ```bash
-# Install dependencies
-pip install yt-dlp faster-whisper requests beautifulsoup4
+# Clone the repository
+git clone https://github.com/arbiger/kb-collector.git
+cd kb-collector
 
-# For AI summarization (optional)
-pip install openai anthropic
+# Run setup script (installs dependencies and creates .env)
+./setup.sh
 ```
 
-## Usage (Python Version - Recommended)
+## Configuration
 
+Edit the `.env` file in the root directory:
+
+```env
+VAULT_PATH=~/Documents/Knowledge
+NOTE_AUTHOR=YourName
+AI_PROVIDER=openai # or anthropic, gemini
+OPENAI_API_KEY=your_key_here
+TAVILY_API_KEY=your_key_here
+```
+
+## Usage
+
+### Collect knowledge
 ```bash
 # Collect YouTube video
-python3 scripts/collect.py youtube "https://youtu.be/xxxxx" "stock,investing"
+python3 scripts/collect.py youtube "https://youtu.be/xxxxx" --tags "stock,investing"
 
 # Collect URL
-python3 scripts/collect.py url "https://example.com/article" "python,api"
+python3 scripts/collect.py url "https://example.com/article" --tags "python,api"
 
 # Collect plain text
-python3 scripts/collect.py text "My note content" "tag1,tag2"
+python3 scripts/collect.py text "My note content" --title "Custom Title" --tags "tag1,tag2"
 ```
 
-## Usage (Bash Version - Legacy)
+### Nightly Research
 
-```bash
-# Collect YouTube
-./scripts/collect.sh "https://youtu.be/xxxxx" "stock,investing" youtube
-
-# Collect URL
-./scripts/collect.sh "https://example.com/article" "python,api" url
-
-# Collect plain text
-./scripts/collect.sh "My note" "tag1,tag2" text
-```
-
-## Nightly Research (New!)
-
-Automated AI/LLM/tech trend tracking - runs daily and saves to Obsidian.
+Automated tech trend tracking - saves results to Obsidian.
 
 ```bash
 # Save to Obsidian only
@@ -61,63 +62,13 @@ Automated AI/LLM/tech trend tracking - runs daily and saves to Obsidian.
 
 # Save to Obsidian AND send email
 ./scripts/nightly-research.sh --save --send
-
-# Send email only
-./scripts/nightly-research.sh --send
-```
-
-### Features
-- Searches multiple sources (Hacker News, Reddit, Twitter)
-- LLM summarization (optional)
-- Saves to Obsidian with tags
-- Optional email digest
-
-### Cron Setup (optional)
-```bash
-# Run every night at 10 PM
-0 22 * * * /path/to/nightly-research.sh --save --send
-```
-
-## Configuration
-
-Edit the script to customize:
-
-```python
-VAULT_PATH = os.path.expanduser("~/Documents/YourVault")
-NOTE_AUTHOR = "YourName"
-```
-
-## Output Format
-
-Notes saved to: `{VAULT_PATH}/yyyy-mm-dd-title.md`
-
-```markdown
----
-created: 2026-03-03T12:00:00
-source: https://...
-tags: [stock, investing]
-author: [Your Name]
----
-
-# Title
-
-> **TLDR:** Summary here...
-
----
-
-Content...
-
----
-*Saved: 2026-03-03*
 ```
 
 ## Dependencies
 
-- yt-dlp
-- faster-whisper (for transcription)
-- requests + beautifulsoup4 (for URL fetching)
-- Optional: openai/anthropic (for AI summarization)
+- **Python Packages**: `yt-dlp`, `faster-whisper`, `python-dotenv`, `requests`, `beautifulsoup4`, `openai`, `anthropic`, `google-generativeai`
+- **System**: `ffmpeg` (for audio extraction)
 
-## Credits
+## Output Format
 
-Automated note-taking workflow for Obsidian.
+Notes are saved to: `{VAULT_PATH}/yyyy-mm-dd-title.md` with full frontmatter, a > **TLDR** section, and the main content.
