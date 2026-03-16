@@ -15,7 +15,7 @@ When the user asks to "collect" something (URL, video, or text):
 2. **Short Tasks (Text/Small URLs)**: You can run `python3 scripts/collect.py` directly if it's quick.
 
 ### Example Spawning
-> "我 spawn 一個子任務去處理 collect 任務，完成後會通知你 📥"
+> "I will spawn sub-agent for this mission, I will notify you when done 📥"
 
 ```bash
 sessions_spawn(
