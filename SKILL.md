@@ -1,11 +1,28 @@
 ---
 name: kb-collector
-description: Knowledge Base Collector. Save YouTube, URLs, and text to Obsidian with AI summarization. Supports multi-language transcription and summarization.
+description: Knowledge Base Collector - save YouTube, URLs, text to Obsidian with AI summarization. Auto-transcribes videos, fetches pages, supports weekly/monthly digest emails and nightly research.
+trigger: "^collect\\s+(.+)$"
 ---
 
 # KB Collector
 
-Save and synthesize information from various sources into your Obsidian vault.
+Save YouTube videos, URLs, and text to Obsidian with automatic transcription and AI summarization.
+
+## Usage
+
+When the user asks to "collect" something (URL, video, or text):
+1. **Long Tasks (YouTube/Large Pages)**: Use `sessions_spawn` to run the collection in the background so the main chat stays responsive.
+2. **Short Tasks (Text/Small URLs)**: You can run `python3 scripts/collect.py` directly if it's quick.
+
+### Example Spawning
+> "我 spawn 一個子任務去處理 collect 任務，完成後會通知你 📥"
+
+```bash
+sessions_spawn(
+    agentId="collector",
+    prompt="Collect: [input] with tags [tags]. Save to Obsidian."
+)
+```
 
 ## Capabilities
 - **Multilingual Processing**: Transcribes YouTube/Audio in any language and summarizes in the user's requested language.
@@ -29,4 +46,11 @@ Save and synthesize information from various sources into your Obsidian vault.
 If you are an AI agent, **ALWAYS** generate the summary yourself and pass it using `--summary` to minimize cost and latency.
 
 ## Output Format
-Notes are saved to: `{VAULT_PATH}/yyyy-mm-dd-title.md` with full frontmatter, a > **TLDR** section, and the main content.
+
+### Filename
+`{VAULT_PATH}/yyyy-mm-dd-title.md`
+
+### Content Structure
+- **Frontmatter**: date, tags, source, author
+- **TLDR Section**: > **TLDR** (AI-generated summary)
+- **Main Content**: Full transcript / article text
