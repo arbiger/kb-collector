@@ -220,15 +220,22 @@ def summarize_text(text, title=""):
         return ""
 
     try:
+        SUMMARY_PROMPT = f"""你是專業的研究分析助理。請根據以下內容，生成一份**詳細的結構化摘要**。
+
+要求：
+1. 使用與內容相同的語言（繁體中文）
+2. 至少包含：\n   - **核心論點**：作者/講者最主要想表達什麼\n   - **關鍵證據與細節**：支撐論點的重要細節、數據或引用\n   - **重要分析**：值得記住的洞見或有趣的觀點\n   - **總結一句話**：用一句話濃縮全文最重要的事\n3. 結構清晰，用 markdown 標題分層\n4. 不要只是簡短概括，要有實質內容\n\n標題：{title}\n\n內容：{text[:8000]}"""
+
         if AI_PROVIDER == "openai":
             from openai import OpenAI
             client = OpenAI(api_key=api_key, base_url=base_url or None)
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are a professional research assistant. Summarize the following content into a concise TLDR (2-3 sentences) in the same language as the content."},
-                    {"role": "user", "content": f"Title: {title}\n\nContent: {text[:8000]}"}
-                ]
+                    {"role": "system", "content": "You are a professional research assistant that writes detailed structured summaries."},
+                    {"role": "user", "content": SUMMARY_PROMPT}
+                ],
+                max_tokens=2000
             )
             return response.choices[0].message.content.strip()
             
@@ -237,9 +244,9 @@ def summarize_text(text, title=""):
             client = anthropic.Anthropic(api_key=api_key)
             response = client.messages.create(
                 model="claude-3-haiku-20240307",
-                max_tokens=300,
+                max_tokens=2000,
                 messages=[
-                    {"role": "user", "content": f"Summarize this in 2-3 sentences:\n\n{text[:8000]}"}
+                    {"role": "user", "content": SUMMARY_PROMPT}
                 ]
             )
             return response.content[0].text.strip()
@@ -248,7 +255,7 @@ def summarize_text(text, title=""):
             import google.generativeai as genai
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(f"Summarize this in 2-3 sentences:\n\n{text[:8000]}")
+            response = model.generate_content(SUMMARY_PROMPT)
             return response.text.strip()
 
         elif AI_PROVIDER == "minimax":
@@ -258,9 +265,9 @@ def summarize_text(text, title=""):
             payload = {
                 "model": "MiniMax-M2.5",
                 "messages": [
-                    {"role": "user", "content": f"標題：{title}\n\n請用 2-3 句話總結以下內容，重點說明核心觀點：\n\n{text[:8000]}"}
+                    {"role": "user", "content": SUMMARY_PROMPT}
                 ],
-                "max_tokens": 300
+                "max_tokens": 2000
             }
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             resp = requests.post(f"{minimax_base}/v1/messages", json=payload, headers=headers, timeout=60)
@@ -279,10 +286,10 @@ def summarize_text(text, title=""):
             payload = {
                 "model": os.getenv("OPENROUTER_MODEL", "anthropic/claude-3-haiku"),
                 "messages": [
-                    {"role": "system", "content": "You are a professional research assistant. Summarize in 2-3 sentences."},
-                    {"role": "user", "content": f"Title: {title}\n\nContent: {text[:8000]}"}
+                    {"role": "system", "content": "You are a professional research assistant that writes detailed structured summaries."},
+                    {"role": "user", "content": SUMMARY_PROMPT}
                 ],
-                "max_tokens": 300
+                "max_tokens": 2000
             }
             headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://kb-collector"}
             resp = requests.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers, timeout=60)
@@ -363,8 +370,16 @@ tags: [{formatted_tags}]
 
 """
     if tldr:
-        frontmatter += f"> **TLDR:** {tldr}\n\n"
-    
+        # Format multi-line tldr as proper blockquote
+        tldr_lines = tldr.strip().split('\n')
+        quoted_lines = []
+        for i, line in enumerate(tldr_lines):
+            if i == 0:
+                quoted_lines.append(f"> **TLDR:** {line}")
+            else:
+                quoted_lines.append(f"> {line}")
+        frontmatter += "\n".join(quoted_lines) + "\n\n"
+
     frontmatter += "---\n\n"
 
     try:

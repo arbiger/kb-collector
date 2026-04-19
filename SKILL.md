@@ -6,12 +6,24 @@ trigger: "^collect\\s+(.+)$"
 
 # KB Collector
 
-Save YouTube videos, URLs, and text to Obsidian with automatic transcription and AI summarization.
+Save YouTube videos, URLs, and text to Obsidian as raw markdown. The script handles collection only — **AI summarization is a separate step done by the primary model**.
+
+## Two-Step Workflow
+
+```
+Step 1 (Python/kb-collector): Download → Transcribe → Save raw .md
+Step 2 (Primary Model):         Read .md   → Write detailed summary → Save back to .md
+```
+
+**Why two steps?**
+- The primary model (MiniMax-M2.7) writes better, more contextual summaries than a hardcoded internal call
+- Summarization style, depth, and focus are controlled by the model, not the script
+- No hardcoded AI provider dependencies in the collection layer
 
 ## Usage
 
 When the user asks to "collect" something (URL, video, or text):
-1. **Long Tasks (YouTube/Large Pages)**: Use `sessions_spawn` to run the collection in the background so the main chat stays responsive.
+1. **Long Tasks (YouTube/Large Pages)**: Use `exec` tool to run the collection directly (NOT `sessions_spawn` — subagent has ~2-min timeout that kills long transcription).
 2. **Short Tasks (Text/Small URLs)**: You can run `python3 scripts/collect.py` directly if it's quick.
 
 ### Example Spawning
@@ -25,10 +37,10 @@ sessions_spawn(
 ```
 
 ## Capabilities
-- **Multilingual Processing**: Transcribes YouTube/Audio in any language and summarizes in the user's requested language.
-- **Agent Integration**: Allows AI agents to pass pre-processed summaries directly via `--summary` flag.
-- **AI Auto-Summarization**: After transcription, automatically calls MiniMax to generate a TLDR summary (if `AI_PROVIDER=minimax` in `.env`).
-- **Nightly Insights**: Automated research scripts for tech and market trends.
+- **Collection only**: kb-collector handles download, transcription, and raw markdown output
+- **Multilingual Processing**: Transcribes YouTube/Audio in any language
+- **Agent Integration**: Allows AI agents to pass pre-processed summaries via `--summary` flag
+- **Nightly Insights**: Automated research scripts for tech and market trends
 
 ## Long Audio Handling (Auto-Chunking)
 
@@ -49,15 +61,17 @@ For YouTube audio > 10 minutes, the script automatically splits into **600-secon
    AI_PROVIDER=minimax   # Options: minimax | openai | anthropic | gemini | openrouter | none
    ```
 
-### AI Provider Configuration
+### Legacy: Internal AI Summarization
+The script has a legacy `AI_PROVIDER` option for inline summarization (kept for backward compatibility). For better results, use the two-step workflow above instead:
+
 | Provider | API Format | Notes |
 |----------|------------|-------|
-| `minimax` | Anthropic Messages | Uses `MINIMAX_API_KEY` + `MINIMAX_BASE_URL` from environment |
-| `openai` | OpenAI Chat | Uses `OPENAI_API_KEY` |
-| `anthropic` | Anthropic Messages | Uses `ANTHROPIC_API_KEY` |
-| `gemini` | Google Generative | Uses `GEMINI_API_KEY` |
-| `openrouter` | OpenAI Chat | Uses `OPENROUTER_API_KEY` |
-| `none` | (no AI) | Manual `--summary` required |
+| `minimax` | Anthropic Messages | Legacy inline summary |
+| `openai` | OpenAI Chat | Legacy inline summary |
+| `anthropic` | Anthropic Messages | Legacy inline summary |
+| `gemini` | Google Generative | Legacy inline summary |
+| `openrouter` | OpenAI Chat | Legacy inline summary |
+| `none` | (no AI) | **Recommended** — use two-step workflow |
 
 ## Usage
 
@@ -78,9 +92,22 @@ python3 /Users/george/.openclaw/workspace/skills/kb-collector/scripts/collect.py
 - **Web**: `python3 scripts/collect.py url "[URL]" [--summary "你的摘要"]`
 - **Direct Note**: `python3 scripts/collect.py text "[Content]" --title "[Title]" [--summary "你的摘要"]`
 
-## Efficiency Tip for Agents
-- **Preferred**: Pass `--summary "..."` with your own AI-generated summary to minimize cost and latency.
-- **Alternative**: Set `AI_PROVIDER=minimax` in `.env` — KB Collector will automatically call MiniMax after transcription to generate TLDR.
+## Workflow for Agents
+
+### Step 1: Collect raw content
+```bash
+python3 /path/to/collect.py youtube "[YouTube URL]" --tags "youtube,research"
+```
+→ Output: Raw .md file with transcript/content, no summary
+
+### Step 2: Summarize with primary model
+Read the saved .md file, then write a detailed structured summary and append/update it in the file.
+
+**Tip**: Pass `--summary "..."` to skip Step 2 if you already have a summary ready.
+
+```bash
+python3 /path/to/collect.py youtube "[YouTube URL]" --summary "Your detailed summary here" --tags "youtube"
+```
 
 ## Output Format
 
@@ -89,5 +116,6 @@ python3 /Users/george/.openclaw/workspace/skills/kb-collector/scripts/collect.py
 
 ### Content Structure
 - **Frontmatter**: date, tags, source, author
-- **TLDR Section**: > **TLDR** (AI-generated summary)
-- **Main Content**: Full transcript / article text
+- **Title**: H1 title
+- **Transcript/Content**: Full raw text (no summary in two-step workflow)
+- **Summary**: Added later by primary model, typically at top as TLDR block
