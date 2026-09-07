@@ -6,14 +6,14 @@ Refined for Agent-friendly use (Optional AI, Metadata emphasis).
 """
 
 import os
-import sys
 import subprocess
 import argparse
 import logging
-import json
 import math
 import signal
+import shutil
 from datetime import datetime
+from pathlib import Path
 from dotenv import load_dotenv
 
 class TimeoutError(Exception):
@@ -40,29 +40,73 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 # Load configuration
-load_dotenv()
+# Load the skill-local .env regardless of the caller's current working directory.
+# This matters because Hermes often invokes the script by absolute path from another cwd.
+_SKILL_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(_SKILL_DIR / ".env")
+load_dotenv()  # allow caller cwd/env to override only when explicitly provided
 
 VAULT_PATH = os.path.expanduser(os.getenv("VAULT_PATH", "~/Documents/Knowledge"))
 DEFAULT_AUTHOR = os.getenv("NOTE_AUTHOR", "User")
 AI_PROVIDER = os.getenv("AI_PROVIDER", "none").lower()
+SUPPORTED_SUMMARY_PROVIDERS = {"minimax", "none"}
+
+
+def validate_summary_provider(provider):
+    """Reject summary providers that are not part of the supported runtime."""
+    normalized = (provider or "none").strip().lower()
+    if normalized not in SUPPORTED_SUMMARY_PROVIDERS:
+        supported = ", ".join(sorted(SUPPORTED_SUMMARY_PROVIDERS))
+        raise ValueError(
+            f"Unsupported AI_PROVIDER={provider!r}; supported provider(s): {supported}"
+        )
+    return normalized
+
+
+def resolve_command(name):
+    """Resolve system tools, then tools installed beside the MLX venv."""
+    found = shutil.which(name)
+    if found:
+        return found
+    venv_candidate = Path(MLX_WHISPER_BIN).parent / name
+    if venv_candidate.is_file():
+        return str(venv_candidate)
+    return name
+
+def normalize_source_published_at(value):
+    """Normalize provider publication dates to YYYY-MM-DD, or return None."""
+    value = (value or "").strip()
+    if len(value) == 8 and value.isdigit():
+        try:
+            return datetime.strptime(value, "%Y%m%d").strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+    if len(value) == 10:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+    return None
+
 
 def get_video_info(url):
-    """Get YouTube video title and uploader using yt-dlp"""
+    """Get YouTube video title, uploader, and publication date using yt-dlp."""
     try:
         result = subprocess.run(
-            ['yt-dlp', '--get-title', '--get-filename', '-o', '%(uploader)s', url],
+            [resolve_command('yt-dlp'), '--print', '%(title)s', '--print', '%(uploader)s', '--print', '%(upload_date)s', url],
             capture_output=True, text=True, timeout=30
         )
         lines = result.stdout.strip().split('\n')
         title = lines[0] if len(lines) > 0 else ""
         uploader = lines[1] if len(lines) > 1 else "Unknown"
+        published_at = normalize_source_published_at(lines[2] if len(lines) > 2 else None)
         
         # Clean filename: remove illegal characters and limit length
         clean_title = ''.join(c for c in title if c.isalnum() or c in ' -_').strip()[:100]
-        return clean_title or f"Video-{datetime.now().strftime('%H%M%S')}", uploader
+        return clean_title or f"Video-{datetime.now().strftime('%H%M%S')}", uploader, published_at
     except Exception as e:
         logger.error(f"Error getting video info: {e}")
-        return f"Video-{datetime.now().strftime('%H%M%S')}", "Unknown"
+        return f"Video-{datetime.now().strftime('%H%M%S')}", "Unknown", None
 
 def download_youtube_audio(url):
     """Download YouTube audio as m4a"""
@@ -70,7 +114,7 @@ def download_youtube_audio(url):
     try:
         logger.info(f"Downloading audio from {url}...")
         subprocess.run(
-            ['yt-dlp', '-f', 'bestaudio[ext=m4a]', '--extract-audio', 
+            [resolve_command('yt-dlp'), '-f', 'bestaudio[ext=m4a]', '--extract-audio',
              '--audio-format', 'm4a', '-o', f'{output_base}.%(ext)s', url],
             capture_output=True, check=True, timeout=900
         )
@@ -83,7 +127,7 @@ def get_audio_duration(audio_path):
     """Get audio duration in seconds using ffprobe"""
     try:
         result = subprocess.run(
-            ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+            [resolve_command('ffprobe'), '-v', 'quiet', '-show_entries', 'format=duration',
              '-of', 'csv=p=0', audio_path],
             capture_output=True, text=True, timeout=10
         )
@@ -91,51 +135,115 @@ def get_audio_duration(audio_path):
     except Exception:
         return 0
 
-def get_whisper_model():
-    """Load Whisper model once per session (GPU-accelerated on Mac M4 Pro)"""
-    from faster_whisper import WhisperModel
-    # Use "tiny" model for speed — works on CPU (MPS/CoreML not supported by faster-whisper on Mac)
+SUPPORTED_WHISPER_ENGINES = {"mlx"}
+WHISPER_ENGINE = os.environ.get("KB_WHISPER_ENGINE", "mlx").strip().lower()
+MLX_WHISPER_BIN = os.environ.get(
+    "MLX_WHISPER_BIN", "/Users/george/venv-mlx-whisper/bin/mlx_whisper"
+)
+MLX_WHISPER_MODEL = os.environ.get(
+    "MLX_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
+)
+
+def validate_whisper_engine(engine):
+    """Reject unsupported engines instead of silently selecting a fallback."""
+    normalized = (engine or "").strip().lower()
+    if normalized not in SUPPORTED_WHISPER_ENGINES:
+        supported = ", ".join(sorted(SUPPORTED_WHISPER_ENGINES))
+        raise ValueError(
+            f"Unsupported KB_WHISPER_ENGINE={engine!r}; supported engine(s): {supported}"
+        )
+    return normalized
+
+
+def whisper_wav_path(audio_path):
+    """Return the deterministic temporary WAV path for any audio extension."""
+    source = os.path.splitext(os.fspath(audio_path))[0]
+    return f"{source}_whisper.wav"
+
+
+def cleanup_transcription_artifacts(audio_path):
+    """Remove the WAV and MLX text sidecars created for one audio file."""
+    if not audio_path:
+        return
+    wav_path = whisper_wav_path(audio_path)
+    candidates = [wav_path, os.path.splitext(wav_path)[0] + ".txt"]
+    for path in candidates:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError as exc:
+            logger.warning("Could not remove temporary transcription file %s: %s", path, exc)
+
+def transcribe_chunk_mlx(wav_path):
+    """Transcribe a single audio file via mlx-whisper subprocess (primary engine on Apple Silicon).
+
+    Verified 2026-08-29 on M4 Pro: 26:41 zh video = 54 s (after model cached).
+    --condition-on-previous-text False is mandatory to suppress tail hallucination
+    (e.g. `我说` repeating 60+ times) that large-v3-turbo emits by default.
+    """
+    if not os.path.isfile(MLX_WHISPER_BIN):
+        logger.error(
+            f"mlx-whisper not found at {MLX_WHISPER_BIN}. "
+            f"Run setup.sh or set MLX_WHISPER_BIN to an installed mlx_whisper executable."
+        )
+        return None
     try:
-        model = WhisperModel("tiny", device="mps", compute_type="float16")
-        logger.info("Whisper: using tiny+mps (Metal GPU)")
+        output_dir = os.path.dirname(os.path.abspath(wav_path))
+        basename = os.path.splitext(os.path.basename(wav_path))[0]
+        txt_path = os.path.join(output_dir, basename + ".txt")
+        # Never accept a stale sidecar if the subprocess exits without writing fresh output.
+        if os.path.exists(txt_path):
+            os.remove(txt_path)
+        result = subprocess.run(
+            [
+                MLX_WHISPER_BIN,
+                wav_path,
+                "--model", MLX_WHISPER_MODEL,
+                "--language", "zh",
+                "--condition-on-previous-text", "False",  # suppress tail hallucination
+                "--output-format", "txt",
+                "--output-dir", output_dir,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=600,  # 10 min ceiling per chunk (mlx-whisper ~30x realtime)
+        )
+        if os.path.exists(txt_path):
+            with open(txt_path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        # Keep stdout as a compatibility fallback for alternate mlx-whisper versions.
+        return result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        logger.error(f"mlx-whisper timed out on {wav_path}")
+        return None
+    except subprocess.CalledProcessError as e:
+        logger.error(f"mlx-whisper failed: {e.stderr or e}")
+        return None
     except Exception as e:
-        logger.warning(f"mps failed ({e}), falling back to cpu")
-        model = WhisperModel("tiny", device="cpu", compute_type="int8")
-        logger.info("Whisper: using tiny+cpu")
-    return model
-
-# Global model instance (loaded once per session)
-_whisper_model = None
-
-def get_model():
-    global _whisper_model
-    if _whisper_model is None:
-        _whisper_model = get_whisper_model()
-    return _whisper_model
-
-def transcribe_chunk_whisper(wav_path):
-    """Transcribe a single audio file using the shared Whisper model"""
-    model = get_model()
-    segments, info = model.transcribe(wav_path, language="zh", beam_size=5)
-    return " ".join([seg.text for seg in segments])
+        logger.error(f"mlx-whisper error: {e}")
+        return None
 
 def transcribe_audio(audio_path, chunk_duration=600, timeout=900):
     """
-    Transcribe audio using faster-whisper (local, GPU-accelerated).
+    Transcribe audio through the supported local MLX Whisper executable.
+
     For audio longer than 10 minutes, splits into chunks to avoid memory issues.
     Overall transcription is protected by a timeout (default 15 min).
     """
     if not audio_path or not os.path.exists(audio_path):
         return None
 
-    def _do_transcribe():
-        logger.info("Starting transcription via faster-whisper (tiny)...")
+    engine = validate_whisper_engine(WHISPER_ENGINE)
+    chunk_fn = transcribe_chunk_mlx
+    logger.info("Starting transcription via engine=%s (model=%s)...", engine, MLX_WHISPER_MODEL)
 
+    def _do_transcribe():
         # Convert m4a to wav
-        wav_path = audio_path.replace('.m4a', '_whisper.wav')
+        wav_path = whisper_wav_path(audio_path)
         try:
             subprocess.run(
-                ['ffmpeg', '-y', '-i', audio_path, '-ar', '16000', '-ac', '1', wav_path],
+                [resolve_command('ffmpeg'), '-y', '-i', audio_path, '-ar', '16000', '-ac', '1', wav_path],
                 capture_output=True, check=True, timeout=60
             )
         except Exception as e:
@@ -166,7 +274,7 @@ def transcribe_audio(audio_path, chunk_duration=600, timeout=900):
 
                 try:
                     subprocess.run(
-                        ['ffmpeg', '-y', '-ss', str(start), '-t', str(chunk_duration),
+                        [resolve_command('ffmpeg'), '-y', '-ss', str(start), '-t', str(chunk_duration),
                          '-i', wav_path, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', chunk_path],
                         capture_output=True, check=True, timeout=30
                     )
@@ -174,7 +282,7 @@ def transcribe_audio(audio_path, chunk_duration=600, timeout=900):
                     logger.error(f"Chunk creation failed: {e}")
                     continue
 
-                chunk_text = transcribe_chunk_whisper(chunk_path)
+                chunk_text = chunk_fn(chunk_path)
                 if chunk_text:
                     all_transcripts.append(chunk_text)
                     logger.info(f"Chunk {i+1} done: {len(chunk_text)} chars")
@@ -195,7 +303,7 @@ def transcribe_audio(audio_path, chunk_duration=600, timeout=900):
                 return transcript
 
         # For short audio (<= 10 min), transcribe directly
-        return transcribe_chunk_whisper(wav_path)
+        return chunk_fn(wav_path)
 
     # Wrap entire transcription with overall timeout
     # For 12-min video: tiny+cpu takes ~12s, so 15min timeout is very safe
@@ -206,17 +314,17 @@ def transcribe_audio(audio_path, chunk_duration=600, timeout=900):
     return result
 
 def summarize_text(text, title=""):
-    """Summarize text using configured AI provider"""
+    """Summarize text using the configured MiniMax provider, or skip when disabled."""
     if not text:
         return ""
 
-    if AI_PROVIDER == "none" or not AI_PROVIDER:
+    provider = validate_summary_provider(AI_PROVIDER)
+    if provider == "none":
         return ""
 
-    api_key = os.getenv(f"{AI_PROVIDER.upper()}_API_KEY")
-    base_url = os.getenv(f"{AI_PROVIDER.upper()}_BASE_URL", "")
+    api_key = os.getenv("MINIMAX_API_KEY")
     if not api_key:
-        logger.debug(f"No API key for {AI_PROVIDER}, skipping internal summary.")
+        logger.debug("No API key for minimax, skipping internal summary.")
         return ""
 
     try:
@@ -226,76 +334,27 @@ def summarize_text(text, title=""):
 1. 使用與內容相同的語言（繁體中文）
 2. 至少包含：\n   - **核心論點**：作者/講者最主要想表達什麼\n   - **關鍵證據與細節**：支撐論點的重要細節、數據或引用\n   - **重要分析**：值得記住的洞見或有趣的觀點\n   - **總結一句話**：用一句話濃縮全文最重要的事\n3. 結構清晰，用 markdown 標題分層\n4. 不要只是簡短概括，要有實質內容\n\n標題：{title}\n\n內容：{text[:8000]}"""
 
-        if AI_PROVIDER == "openai":
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key, base_url=base_url or None)
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a professional research assistant that writes detailed structured summaries."},
-                    {"role": "user", "content": SUMMARY_PROMPT}
-                ],
-                max_tokens=2000
-            )
-            return response.choices[0].message.content.strip()
-            
-        elif AI_PROVIDER == "anthropic":
-            import anthropic
-            client = anthropic.Anthropic(api_key=api_key)
-            response = client.messages.create(
-                model="claude-3-haiku-20240307",
-                max_tokens=2000,
-                messages=[
-                    {"role": "user", "content": SUMMARY_PROMPT}
-                ]
-            )
-            return response.content[0].text.strip()
-
-        elif AI_PROVIDER == "gemini":
-            import google.generativeai as genai
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(SUMMARY_PROMPT)
-            return response.text.strip()
-
-        elif AI_PROVIDER == "minimax":
-            import requests
-            # MiniMax uses Anthropic API format at https://api.minimax.io/anthropic
-            minimax_base = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/anthropic")
-            payload = {
-                "model": "MiniMax-M2.5",
-                "messages": [
-                    {"role": "user", "content": SUMMARY_PROMPT}
-                ],
-                "max_tokens": 2000
-            }
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            resp = requests.post(f"{minimax_base}/v1/messages", json=payload, headers=headers, timeout=60)
-            resp.raise_for_status()
-            result = resp.json()
-            # Anthropic/MiniMax format: content is a list of blocks (text + thinking)
-            content = result.get("content", [])
-            if isinstance(content, list):
-                for block in content:
-                    if block.get("type") == "text":
-                        return block.get("text", "").strip()
-            return ""
-
-        elif AI_PROVIDER == "openrouter":
-            import requests
-            payload = {
-                "model": os.getenv("OPENROUTER_MODEL", "anthropic/claude-3-haiku"),
-                "messages": [
-                    {"role": "system", "content": "You are a professional research assistant that writes detailed structured summaries."},
-                    {"role": "user", "content": SUMMARY_PROMPT}
-                ],
-                "max_tokens": 2000
-            }
-            headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://kb-collector"}
-            resp = requests.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers, timeout=60)
-            resp.raise_for_status()
-            result = resp.json()
-            return result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        import requests
+        # MiniMax uses Anthropic API format at https://api.minimax.io/anthropic.
+        minimax_base = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/anthropic")
+        payload = {
+            "model": "MiniMax-M3",
+            "messages": [
+                {"role": "user", "content": SUMMARY_PROMPT}
+            ],
+            "max_tokens": 2000
+        }
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        resp = requests.post(f"{minimax_base}/v1/messages", json=payload, headers=headers, timeout=60)
+        resp.raise_for_status()
+        result = resp.json()
+        # Anthropic/MiniMax format: content is a list of blocks (text + thinking).
+        content = result.get("content", [])
+        if isinstance(content, list):
+            for block in content:
+                if block.get("type") == "text":
+                    return block.get("text", "").strip()
+        return ""
 
     except Exception as e:
         logger.error(f"AI summarization failed: {e}")
@@ -347,46 +406,116 @@ def fetch_url(url):
         logger.error(f"Error fetching URL: {e}")
         return str(e), "error-fetching", "N/A"
 
-def save_to_obsidian(content, title, url, tags, tldr=None, source_author="Unknown"):
+def infer_source_type(source):
+    """Return a stable source_type value for frontmatter."""
+    if not source:
+        return "text"
+    lowered = source.lower()
+    if "youtube.com" in lowered or "youtu.be" in lowered:
+        return "youtube"
+    if "facebook.com" in lowered or "fb.watch" in lowered:
+        return "facebook"
+    if "instagram.com" in lowered:
+        return "instagram"
+    if "x.com" in lowered or "twitter.com" in lowered:
+        return "x"
+    if lowered.startswith(("http://", "https://")):
+        return "url"
+    return "text"
+
+
+def format_tags(tags):
+    tag_list = [t.strip() for t in tags.split(',') if t.strip()]
+    return "\n".join(f"  - {tag}" for tag in tag_list)
+
+
+def default_summary_model():
+    return "MiniMax-M3" if validate_summary_provider(AI_PROVIDER) == "minimax" else "provided"
+
+
+def save_to_obsidian(
+    content,
+    title,
+    url,
+    tags,
+    tldr=None,
+    source_author="Unknown",
+    summary_model=None,
+    source_published_at=None,
+):
     """Save formatted markdown to Obsidian vault"""
     date_str = datetime.now().strftime('%Y-%m-%d')
+    created_str = datetime.now().astimezone().isoformat(timespec="seconds")
     safe_title = title.replace('/', '-')
     filename = f"{date_str}-{safe_title}.md"
     filepath = os.path.join(VAULT_PATH, filename)
     
     os.makedirs(VAULT_PATH, exist_ok=True)
-    
-    tag_list = [t.strip() for t in tags.split(',') if t.strip()]
-    formatted_tags = ", ".join(tag_list)
-    
+
+    source = url or "pasted text"
+    source_type = infer_source_type(url)
+    transcript_source_line = "transcript_source: whisper\n" if source_type == "youtube" else ""
+    source_published_at = normalize_source_published_at(source_published_at)
+    source_published_at_value = source_published_at or "null"
+    source_published_at_display = source_published_at or "Unknown"
+    formatted_tags = format_tags(tags)
+    content_heading = "Raw Transcript" if source_type == "youtube" else "Content"
+
     frontmatter = f"""---
-created: {datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}
-source: {url or 'N/A'}
-author: {source_author}
-tags: [{formatted_tags}]
+date: {date_str}
+created: {created_str}
+title: {title}
+source: {source}
+source_type: {source_type}
+source_published_at: {source_published_at_value}
+{transcript_source_line}author: {source_author}
+collector: kb-collector
+tags:
+{formatted_tags}
 ---
 
 # {title}
 
+## Source Snapshot
+
+| Field | Value |
+|---|---|
+| Source | {source} |
+| Type | {source_type} |
+| Author | {source_author} |
+| Published | {source_published_at_display} |
+| Collected | {created_str} |
+
 """
     if tldr:
-        # Format multi-line tldr as proper blockquote
-        tldr_lines = tldr.strip().split('\n')
-        quoted_lines = []
-        for i, line in enumerate(tldr_lines):
-            if i == 0:
-                quoted_lines.append(f"> **TLDR:** {line}")
-            else:
-                quoted_lines.append(f"> {line}")
-        frontmatter += "\n".join(quoted_lines) + "\n\n"
+        summary_label = summary_model or "provided"
+        summary_body = tldr.strip()
+        summary_comment = f"<!-- AI Summary ({summary_label}) -->"
+    else:
+        summary_body = ""
+        summary_comment = "<!-- Add AI summary here. -->"
 
-    frontmatter += "---\n\n"
+    frontmatter += f"""## AI Summary
+{summary_comment}
+
+{summary_body}
+
+## Analysis & Red Team
+<!-- Add analysis and red-team notes here. -->
+
+## George Annotation
+<!-- Add George's annotation here. -->
+
+"""
+
+    frontmatter += f"## {content_heading}\n\n"
 
     try:
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(frontmatter)
             f.write(content)
-            f.write(f"\n\n---\n*Collected by: {DEFAULT_AUTHOR} on {datetime.now().strftime('%Y-%m-%d')}*\n")
+            f.write(f"\n\n## Collection Metadata\n\n")
+            f.write(f"*Collected by: {DEFAULT_AUTHOR} on {date_str}*\n")
         return filepath
     except Exception as e:
         logger.error(f"Failed to save file: {e}")
@@ -425,39 +554,51 @@ def main():
         return
 
     if args.command == "youtube":
-        title, uploader = get_video_info(args.url)
+        # Validate before yt-dlp metadata/audio work or any large temporary file is created.
+        validate_whisper_engine(WHISPER_ENGINE)
+        title, uploader, source_published_at = get_video_info(args.url)
         audio_path = download_youtube_audio(args.url)
-        transcript = transcribe_audio(audio_path)
-        
-        if transcript:
-            summary = args.summary or summarize_text(transcript, title)
-            tags = "youtube," + args.tags
-            save_path = save_to_obsidian(transcript, title, args.url, tags, tldr=summary, source_author=uploader)
-            if save_path:
-                logger.info(f"✅ Successfully saved YouTube note: {save_path}")
-        else:
-            logger.error("❌ Transcription failed. No note saved.")
-        
-        # Cleanup temp files
-        if audio_path and os.path.exists(audio_path):
-            os.remove(audio_path)
-        wav_path = audio_path.replace('.m4a', '_qwen.wav') if audio_path else None
-        if wav_path and os.path.exists(wav_path):
-            os.remove(wav_path)
+        try:
+            transcript = transcribe_audio(audio_path)
+
+            if transcript:
+                summary = args.summary or summarize_text(transcript, title)
+                summary_model = "provided" if args.summary else default_summary_model()
+                tags = "youtube," + args.tags
+                save_path = save_to_obsidian(
+                    transcript,
+                    title,
+                    args.url,
+                    tags,
+                    tldr=summary,
+                    source_author=uploader,
+                    summary_model=summary_model,
+                    source_published_at=source_published_at,
+                )
+                if save_path:
+                    logger.info(f"✅ Successfully saved YouTube note: {save_path}")
+            else:
+                logger.error("❌ Transcription failed. No note saved.")
+        finally:
+            cleanup_transcription_artifacts(audio_path)
+            if audio_path and os.path.exists(audio_path):
+                os.remove(audio_path)
 
     elif args.command == "url":
         logger.info(f"Fetching URL: {args.url}")
         content, title, author = fetch_url(args.url)
         summary = args.summary or summarize_text(content, title)
+        summary_model = "provided" if args.summary else default_summary_model()
         tags = "web," + args.tags
-        save_path = save_to_obsidian(content, title, args.url, tags, tldr=summary, source_author=author)
+        save_path = save_to_obsidian(content, title, args.url, tags, tldr=summary, source_author=author, summary_model=summary_model)
         if save_path:
             logger.info(f"✅ Successfully saved URL note: {save_path}")
 
     elif args.command == "text":
         title = args.title or f"Note-{datetime.now().strftime('%H%M%S')}"
         summary = args.summary or summarize_text(args.content, title)
-        save_path = save_to_obsidian(args.content, title, None, args.tags, tldr=summary, source_author=args.author or "N/A")
+        summary_model = "provided" if args.summary else default_summary_model()
+        save_path = save_to_obsidian(args.content, title, None, args.tags, tldr=summary, source_author=args.author or "N/A", summary_model=summary_model)
         if save_path:
             logger.info(f"✅ Successfully saved text note: {save_path}")
 

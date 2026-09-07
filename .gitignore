@@ -5,9 +5,13 @@
 .DS_Store
 *.log
 
-# Virtual environment
+# Virtual environments and Python caches
 venv/
 venv*/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # IDE
 .idea/

@@ -1,121 +1,133 @@
 ---
 name: kb-collector
-description: Knowledge Base Collector - save YouTube, URLs, text to Obsidian with AI summarization. Auto-transcribes videos, fetches pages, supports weekly/monthly digest emails and nightly research.
+description: Collect YouTube, web URLs, and pasted text into George's Obsidian Knowledge vault using one deterministic Python entrypoint and a canonical Markdown format.
 trigger: "^collect\\s+(.+)$"
 ---
 
 # KB Collector
 
-Save YouTube videos, URLs, and text to Obsidian as raw markdown. The script handles collection only — **AI summarization is a separate step done by the primary model**.
-
-## Two-Step Workflow
-
-```
-Step 1 (Python/kb-collector): Download → Transcribe → Save raw .md
-Step 2 (Primary Model):         Read .md   → Write detailed summary → Save back to .md
-```
-
-**Why two steps?**
-- The primary model (MiniMax-M2.7) writes better, more contextual summaries than a hardcoded internal call
-- Summarization style, depth, and focus are controlled by the model, not the script
-- No hardcoded AI provider dependencies in the collection layer
-
-## Usage
-
-When the user asks to "collect" something (URL, video, or text):
-1. **Long Tasks (YouTube/Large Pages)**: Use `exec` tool to run the collection directly (NOT `sessions_spawn` — subagent has ~2-min timeout that kills long transcription).
-2. **Short Tasks (Text/Small URLs)**: You can run `python3 scripts/collect.py` directly if it's quick.
-
-### Example Spawning
-> "I will spawn sub-agent for this mission, I will notify you when done 📥"
+`kb-collector` is the workflow owner for source collection, routing, canonical Knowledge persistence, and the handoff to summary/annotation. The supported executable entrypoint is:
 
 ```bash
-sessions_spawn(
-    agentId="collector",
-    prompt="Collect: [input] with tags [tags]. Save to Obsidian."
-)
+/Users/george/venv-mlx-whisper/bin/python \
+  /Users/george/.hermes/skills/kb-collector/scripts/collect.py <youtube|url|text> ...
 ```
 
-## Capabilities
-- **Collection only**: kb-collector handles download, transcription, and raw markdown output
-- **Multilingual Processing**: Transcribes YouTube/Audio in any language
-- **Agent Integration**: Allows AI agents to pass pre-processed summaries via `--summary` flag
-- **Nightly Insights**: Automated research scripts for tech and market trends
+Do not hand-write a replacement note layout while this entrypoint is available. Do not call removed wrappers or install another transcription engine.
 
-## Long Audio Handling (Auto-Chunking)
+## Routing Contract
 
-For YouTube audio > 10 minutes, the script automatically splits into **600-second (10-min) chunks** to avoid memory issues:
-- Audio > 10 min → split into ~10-min chunks
-- Each chunk transcribed separately → results concatenated
-- **ASR**: faster-whisper `tiny` model (local, no API needed)
-  - ⚠️ MPS/GPU not supported on Mac — always falls back to CPU
-  - tiny ~60x realtime on CPU (29-min video in ~30 seconds)
-  - ⚠️ Do NOT use `sessions_spawn` for YouTube video collection — the subagent has a ~2-min timeout that will kill the process before transcription finishes. Use `exec` directly instead.
+Read [`references/youtube-routing-contract.md`](references/youtube-routing-contract.md) before routing a `Collect` request.
 
-## Setup & Config
-1. Run `./setup.sh` to install `ffmpeg` and Python dependencies.
-2. Configure `.env`:
-   ```env
-   VAULT_PATH=~/Documents/Georges/Knowledge
-   NOTE_AUTHOR=George
-   AI_PROVIDER=minimax   # Options: minimax | openai | anthropic | gemini | openrouter | none
-   ```
+- `Collect <URL>`: acquire once, save one canonical Knowledge note, and complete the source-faithful summary in the same workflow.
+- `Collect <URL>, 先給我詳細總結` or `先不要存，我先看詳細總結`: preview and analyze in chat; write nothing until George chooses a destination.
+- `跟 <project> 有關，放桌面`: create a Desktop/project working note only. Add Knowledge persistence only when George also asks to collect or save.
+- `Collect <URL>，跟 <project> 有關，放桌面`: create the canonical Knowledge note and the linked Desktop/project note.
+- Pasted text and long paragraphs follow the same routing. Use `source: pasted text` and `source_type: text`; preserve George's explicit thoughts as `George Annotation`.
 
-### Legacy: Internal AI Summarization
-The script has a legacy `AI_PROVIDER` option for inline summarization (kept for backward compatibility). For better results, use the two-step workflow above instead:
+`youtube-content` is a read-only helper for temporary transcript acquisition and source inspection. It does not own persistence and must not create a competing KB or project artifact.
 
-| Provider | API Format | Notes |
-|----------|------------|-------|
-| `minimax` | Anthropic Messages | Legacy inline summary |
-| `openai` | OpenAI Chat | Legacy inline summary |
-| `anthropic` | Anthropic Messages | Legacy inline summary |
-| `gemini` | Google Generative | Legacy inline summary |
-| `openrouter` | OpenAI Chat | Legacy inline summary |
-| `none` | (no AI) | **Recommended** — use two-step workflow |
+## YouTube Acquisition
 
-## Usage
+For a YouTube source, use this order when a transcript preview or caption-backed analysis is needed:
 
-### ⚠️ Long YouTube Videos (>2 min transcription) — Use `exec`
+1. Creator-provided captions.
+2. YouTube auto-generated captions.
+3. Local MLX audio transcription when captions are missing or visibly unfit.
 
-For video transcription, run directly via `exec` tool (not `sessions_spawn`):
+Caption acquisition is performed by the documented `youtube-content` helper workflow. Reuse one temporary transcript for preview and persistence; do not fetch the same video a second time merely because George selected a destination.
+
+`collect.py youtube` is the deterministic audio-transcription and persistence entrypoint. It downloads audio and invokes exactly `/Users/george/venv-mlx-whisper/bin/mlx_whisper` with the configured large-v3-turbo model. It does not silently switch engines. If the caption workflow is selected, record the actual caption provenance in the final note; otherwise use the script's MLX-backed `transcript_source: whisper` output.
+
+## MLX Runtime Contract
+
+The only supported audio-to-text engine is `mlx`:
+
+- Binary: `/Users/george/venv-mlx-whisper/bin/mlx_whisper`
+- Model: `mlx-community/whisper-large-v3-turbo`
+- Language: `zh`
+- Hallucination guard: `--condition-on-previous-text False`
+- Output: `--output-format txt` into the temporary audio directory
+- Audio conversion: `ffmpeg` to mono 16 kHz WAV; `ffprobe` checks duration
+- Audio longer than ten minutes is split into deterministic 600-second chunks
+
+The script rejects any `KB_WHISPER_ENGINE` value other than `mlx`. Setup installs MLX and ordinary collector dependencies into the dedicated `/Users/george/venv-mlx-whisper` environment; it never installs Python packages globally.
+
+## Canonical Markdown
+
+`collect.py` owns the file structure. Every saved note has this frontmatter:
+
+```yaml
+date: YYYY-MM-DD                    # collection date
+created: YYYY-MM-DDTHH:MM:SS+08:00  # collection timestamp
+title: <title>
+source: <exact URL or pasted text>
+source_type: youtube|facebook|instagram|x|url|text
+source_published_at: YYYY-MM-DD|null
+transcript_source: whisper           # YouTube notes produced by collect.py
+author: <source author or George>
+collector: kb-collector
+tags:
+  - <tag>
+```
+
+Required body order:
+
+1. `# <title>`
+2. `## Source Snapshot` with source, type, author, publication date, and exact collection timestamp
+3. `## AI Summary` with `<!-- AI Summary (<model>) -->` or the missing-summary placeholder
+4. `## Analysis & Red Team` for assumptions, counterarguments, uncertainty, and applicability
+5. `## George Annotation` for George's own interpretation or correction
+6. `## Raw Transcript` for YouTube, or `## Content` for web/text sources
+7. `## Collection Metadata`
+
+Keep the source-faithful summary separate from red-team analysis and George's annotation. Never substitute collection time for source publication time.
+
+## Summary Policy
+
+Collection and MLX transcription are local/cheap. Source compression should use the configured cheap path, normally MiniMax-M3, when the main model is quota-limited. George-specific interpretation, red-team analysis, and annotation use the main model when needed. An explicit one-off model request does not change the default.
+
+`AI_PROVIDER` remains an optional inline-summary compatibility setting. The current Hermes configuration may use `minimax`; `--summary` is preferred when the summary was already produced, because it avoids a second API call. Do not silently create a raw-only note when the required summary step is unavailable.
+
+## Commands
+
+Install the dedicated runtime and validate system tools:
 
 ```bash
-python3 /Users/george/.openclaw/workspace/skills/kb-collector/scripts/collect.py \
-  youtube "[YouTube URL]" \
-  --tags "tag1,tag2"
+cd /Users/george/.hermes/skills/kb-collector
+./setup.sh
 ```
 
-`sessions_spawn` has a ~2-min subagent timeout that will kill the process before long video transcription completes.
-
-### Short Tasks / One-liners
-- **YouTube**: `python3 scripts/collect.py youtube "[URL]" [--summary "你的摘要"]`
-- **Web**: `python3 scripts/collect.py url "[URL]" [--summary "你的摘要"]`
-- **Direct Note**: `python3 scripts/collect.py text "[Content]" --title "[Title]" [--summary "你的摘要"]`
-
-## Workflow for Agents
-
-### Step 1: Collect raw content
-```bash
-python3 /path/to/collect.py youtube "[YouTube URL]" --tags "youtube,research"
-```
-→ Output: Raw .md file with transcript/content, no summary
-
-### Step 2: Summarize with primary model
-Read the saved .md file, then write a detailed structured summary and append/update it in the file.
-
-**Tip**: Pass `--summary "..."` to skip Step 2 if you already have a summary ready.
+Collect a source:
 
 ```bash
-python3 /path/to/collect.py youtube "[YouTube URL]" --summary "Your detailed summary here" --tags "youtube"
+/Users/george/venv-mlx-whisper/bin/python scripts/collect.py youtube "<YouTube URL>" --tags "topic,source"
+/Users/george/venv-mlx-whisper/bin/python scripts/collect.py url "<URL>" --tags "topic"
+/Users/george/venv-mlx-whisper/bin/python scripts/collect.py text "<text>" --title "<Title>" --tags "topic"
 ```
 
-## Output Format
+Pass an existing summary with `--summary` to persist it without another inline provider call. Run long collections through the direct execution tool with an adequate timeout; do not use a short-lived delegated session for audio work.
 
-### Filename
-`{VAULT_PATH}/yyyy-mm-dd-title.md`
+For existing Knowledge cleanup, use the deterministic normalizer and a backup directory:
 
-### Content Structure
-- **Frontmatter**: date, tags, source, author
-- **Title**: H1 title
-- **Transcript/Content**: Full raw text (no summary in two-step workflow)
-- **Summary**: Added later by primary model, typically at top as TLDR block
+```bash
+/Users/george/venv-mlx-whisper/bin/python scripts/normalize_knowledge_markdown.py \
+  --vault /Users/george/Documents/Georges/Knowledge \
+  --backup-dir <backup-dir>
+```
+
+## Support Files
+
+- `scripts/collect.py`: the single supported collector and Markdown writer.
+- `scripts/normalize_knowledge_markdown.py`: backup-first Knowledge migration helper.
+- `scripts/add_summary.py`: legacy one-off summary materialization helper; use only for existing notes that need repair.
+- `references/youtube-routing-contract.md`: source/destination routing and caption provenance.
+- `references/whisper-completion-and-manual-materialization.md`: MLX completion and manual materialization checks for unusual long jobs.
+- `references/yt-dlp-direct-fallback.md`: captionless long-video recovery using the same MLX binary and canonical writer.
+
+## Safety
+
+- Never print, commit, or overwrite `.env` secrets.
+- Never write to the Knowledge vault during a preview-only route.
+- Verify the selected source and destination before writing.
+- If a collection fails before transcription completes, do not create a raw-only canonical note.

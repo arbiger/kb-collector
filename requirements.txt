@@ -1,9 +1,4 @@
-python-dotenv
-yt-dlp
-faster-whisper
-requests
-beautifulsoup4
-openai
-anthropic
-google-generativeai
-yfinance
+python-dotenv>=1.0
+yt-dlp>=2025.1
+requests>=2.31
+beautifulsoup4>=4.12
